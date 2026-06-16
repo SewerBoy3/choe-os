@@ -1,0 +1,138 @@
+import express from 'express';
+import prisma from '../prisma.js';
+import { verificarUsuario } from '../middleware/auth.js';
+import {
+  loadGameConfig,
+  calculateCoins,
+  buildRewardMessage,
+  getEconomyInfo,
+  getDailyBonusFromSettings,
+  DAILY_BONUS,
+} from '../services/coinEconomy.js';
+
+const router = express.Router();
+
+// GET /api/games/economy — info pública del sistema de monedas
+router.get('/economy', async (req, res) => {
+  try {
+    const config = await loadGameConfig(prisma);
+    const settingsRows = await prisma.setting.findMany({
+      where: { key: 'coin_daily_bonus' },
+    });
+    const settingsMap = Object.fromEntries(settingsRows.map((r) => [r.key, r.value]));
+    const dailyBonus = getDailyBonusFromSettings(settingsMap);
+
+    res.json(getEconomyInfo(config, dailyBonus));
+  } catch (err) {
+    console.error('Error al obtener economía:', err);
+    res.status(500).json({ error: 'Error al consultar la economía de monedas.' });
+  }
+});
+
+// POST /api/games/score
+router.post('/score', verificarUsuario, async (req, res) => {
+  const { game_name, score } = req.body;
+  const userId = req.user.id;
+
+  if (!game_name || score === undefined || isNaN(score)) {
+    return res.status(400).json({ error: 'Nombre de juego y puntuación válidos son obligatorios.' });
+  }
+
+  try {
+    const gameKey = game_name.toLowerCase();
+    const newScore = parseInt(score);
+
+    const config = await loadGameConfig(prisma);
+
+    if (!config[gameKey]) {
+      return res.status(400).json({ error: 'Juego no reconocido.' });
+    }
+
+    const previousBest = await prisma.puntuacionJuego.findFirst({
+      where: { user_id: userId, game_name: gameKey },
+      orderBy: { score: 'desc' },
+    });
+    const oldBest = previousBest?.score || 0;
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const gamesTodayBefore = await prisma.puntuacionJuego.count({
+      where: {
+        user_id: userId,
+        created_at: { gte: todayStart },
+      },
+    });
+    const isFirstGameToday = gamesTodayBefore === 0;
+
+    const settingsRows = await prisma.setting.findMany({
+      where: { key: 'coin_daily_bonus' },
+    });
+    const settingsMap = Object.fromEntries(settingsRows.map((r) => [r.key, r.value]));
+    const dailyBonus = getDailyBonusFromSettings(settingsMap);
+
+    const { total: pointsAwarded, breakdown, isNewRecord } = calculateCoins(
+      gameKey,
+      newScore,
+      oldBest,
+      isFirstGameToday,
+      config,
+      dailyBonus
+    );
+
+    await prisma.puntuacionJuego.create({
+      data: {
+        game_name: gameKey,
+        score: newScore,
+        user_id: userId,
+      },
+    });
+
+    let updatedUser;
+    if (pointsAwarded > 0) {
+      updatedUser = await prisma.user.update({
+        where: { id: userId },
+        data: { points: { increment: pointsAwarded } },
+      });
+    } else {
+      updatedUser = await prisma.user.findUnique({ where: { id: userId } });
+    }
+
+    const message = buildRewardMessage(breakdown, pointsAwarded);
+
+    res.json({
+      success: true,
+      pointsAwarded,
+      breakdown,
+      totalPoints: updatedUser.points,
+      isNewRecord,
+      isFirstGameToday,
+      previousBest: oldBest,
+      message,
+    });
+  } catch (err) {
+    console.error('Error al registrar puntuación:', err);
+    res.status(500).json({ error: 'Error interno al registrar la puntuación.' });
+  }
+});
+
+// GET /api/games/leaderboard/:game_name
+router.get('/leaderboard/:game_name', verificarUsuario, async (req, res) => {
+  const { game_name } = req.params;
+
+  try {
+    const leaderboard = await prisma.puntuacionJuego.findMany({
+      where: { game_name: game_name.toLowerCase() },
+      orderBy: { score: 'desc' },
+      take: 5,
+      include: {
+        user: { select: { username: true } },
+      },
+    });
+
+    res.json(leaderboard);
+  } catch (err) {
+    res.status(500).json({ error: 'Error al obtener la tabla de posiciones.' });
+  }
+});
+
+export default router;

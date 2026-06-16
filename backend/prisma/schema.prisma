@@ -1,0 +1,80 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int                @id @default(autoincrement())
+  username  String             @unique
+  password  String
+  role      String             @default("user")
+  points    Int                @default(0) // "Monedas de Amor"
+  scores    PuntuacionJuego[]
+}
+
+model Vale {
+  id           Int       @id @default(autoincrement())
+  title        String
+  description  String
+  price        Int       @default(50) // Costo en "Monedas de Amor"
+  is_purchased Boolean   @default(false) // Si ya fue comprado
+  purchased_at DateTime?
+  is_redeemed  Boolean   @default(false) // Si ya fue canjeado (webhook)
+  redeemed_at  DateTime?
+
+  @@map("coupons")
+}
+
+model Carta {
+  id             Int       @id @default(autoincrement())
+  title          String
+  content        String    // Puede ser markdown o texto enriquecido
+  is_published   Boolean   @default(false)
+  scheduled_at   DateTime?
+  polaroid_image String?
+  created_at     DateTime  @default(now())
+}
+
+model PuntuacionJuego {
+  id         Int      @id @default(autoincrement())
+  game_name  String
+  score      Int
+  user_id    Int
+  user       User     @relation(fields: [user_id], references: [id])
+  created_at DateTime @default(now())
+}
+
+model Setting {
+  key   String  @id
+  value String?
+
+  @@map("settings")
+}
+
+model Cancion {
+  id             Int      @id @default(autoincrement())
+  title          String
+  artist         String   @default("")
+  description    String   @default("")   // Leyenda corta visible en la tarjeta
+  cover_url      String?
+  cover_drive_id String?
+  source_type    String   @default("audio_link")
+  audio_url      String?  // Ahora es el link externo (Spotify, YouTube, etc.)
+  audio_drive_id String?
+  embed_url      String?
+  lyrics         String   @default("")
+  sections       String   @default("[]")
+  sort_order     Int      @default(0)
+  is_published   Boolean  @default(true)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@map("canciones")
+}
